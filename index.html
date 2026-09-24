@@ -51,10 +51,13 @@ nav button{flex-direction:column;align-items:center;font-size:10px;gap:0;padding
 <div id="focus"></div><div id="toast" role="status"></div>
 <script>
 // ---------- Storage (localStorage, guarded) ----------
-const K='studymate_ai_v1';let mem=null;
-const fresh=()=>({student:null,plans:[],active:null,xp:0,streak:0,last:null,moods:[],mins:0,pref:'06:00',hours:3,theme:'',view:'home',tab:'overview',all:true});
-let S=(()=>{try{return Object.assign(fresh(),JSON.parse(localStorage.getItem(K)))}catch(e){return fresh()}})();
-const save=()=>{try{localStorage.setItem(K,JSON.stringify(S))}catch(e){}};
+const AK='sm_accounts',SK='sm_session',DK=u=>'sm_data_'+u;
+const fresh=()=>({student:null,plans:[],active:null,xp:0,streak:0,last:null,moods:[],mins:0,pref:'06:00',hours:3,theme:'',view:'home',tab:'overview',all:true,ts:0});
+const rd=(k,d)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch(e){return d}};
+const wr=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));return true}catch(e){return false}};
+let ACC=rd(AK,{}),USER=rd(SK,null),S=fresh(),CLOUD=null,CT=null,AM='in';
+if(USER&&ACC[USER])S=Object.assign(fresh(),rd(DK(USER),{}));else USER=null;
+const save=()=>{if(!USER)return;S.ts=Date.now();wr(DK(USER),S);cloudPush()};
 // ---------- Helpers ----------
 const $=s=>document.querySelector(s),uid=()=>Math.random().toString(36).slice(2,9);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -97,10 +100,19 @@ S.plans=[mk('Mathematics Unit Test','📐',12,'high',{Mathematics:['Trigonometry
 mk('Physics Model Exam','🔬',18,'medium',{Physics:['Electrostatics','Current Electricity','Magnetism','Optics','Modern Physics','Waves','Thermodynamics']},.5),
 mk('Chemistry Semester Exam','🧪',24,'low',{Organic:['Hydrocarbons','Alcohols','Amines','Polymers','Biomolecules'],Inorganic:['Periodic Table','d-block','Coordination','Metallurgy','p-block']},.8),
 mk('UCEED Preparation','🎨',160,'medium',{Design:['Sketching','Visualization','Design Theory','Logical Reasoning','Observation','Mock Tests']},.31)];S.active=S.plans[0].id;save();go('home');toast('🎉 Demo student loaded')}
+// ---------- Accounts (login persists across reloads; optional private cloud sync) ----------
+async function hash(u,pw,salt){const t=salt+':'+u+':'+pw;try{const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(t));return[...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('')}catch(e){let h=5381;for(const c of t)h=((h<<5)+h+c.charCodeAt(0))|0;return'x'+h}}
+async function signup(u,pw){u=u.trim().toLowerCase();if(!/^[a-z0-9_]{3,20}$/.test(u))return toast('Username: 3–20 letters, numbers or _');if(pw.length<4)return toast('Password needs 4+ characters');if(ACC[u])return toast('That username is taken');const salt=uid();ACC[u]={salt,h:await hash(u,pw,salt)};wr(AK,ACC);const old=rd('studymate_ai_v1',null);S=Object.assign(fresh(),Object.keys(ACC).length===1&&old?old:{});S.view='home';USER=u;wr(SK,u);save();toast('🎉 Account created — you are signed in');render()}
+async function login(u,pw){u=u.trim().toLowerCase();const a=ACC[u];if(!a||await hash(u,pw,a.salt)!==a.h)return toast('Wrong username or password');USER=u;wr(SK,u);S=Object.assign(fresh(),rd(DK(u),{}));S.view='home';toast('Welcome back!');render()}
+function logout(){USER=null;try{localStorage.removeItem(SK)}catch(e){}S=fresh();render()}
+function authGo(){const u=$('#au').value,p=$('#ap').value;AM==='up'?signup(u,p):login(u,p)}
+function authView(){return`<div class="hero" style="margin-bottom:16px"><h1>STUDYMATE AI</h1><p style="font-size:18px;margin:4px 0">Your syllabus. Your exams. Your plan.</p></div><div class="card" style="max-width:420px;margin:0 auto"><div class="row" style="margin-bottom:8px"><button class="btn s ${AM==='in'?'':'g'}" onclick="AM='in';render()">Sign in</button><button class="btn s ${AM==='up'?'':'g'}" onclick="AM='up';render()">Create account</button></div><label for="au">Username</label><input id="au" autocomplete="username" autocapitalize="none" onkeydown="if(event.key==='Enter')authGo()"><label for="ap">Password</label><input id="ap" type="password" autocomplete="${AM==='up'?'new-password':'current-password'}" onkeydown="if(event.key==='Enter')authGo()"><button class="btn" style="width:100%;margin-top:14px" onclick="authGo()">${AM==='up'?'Create my account':'Sign in'}</button><p class="mut" style="font-size:13px">Your plans are saved automatically and are still here after you reload or close and reopen the page. Passwords are stored only as a salted hash.</p></div>`}
+function cloudPush(){if(!CLOUD)return;clearTimeout(CT);CT=setTimeout(()=>{const data={};Object.keys(ACC).forEach(u=>{const d=rd(DK(u),null);if(d)data[u]=d});CLOUD.set({acc:JSON.stringify(ACC),data:JSON.stringify(data),ts:Date.now()}).catch(()=>{})},1500)}
+async function cloudInit(){try{if(!window.claude)return;const[db,us]=await Promise.all([claude.use('db'),claude.use('user')]);if(!db||!us)return;const id=await us.id();if(!id)return;CLOUD=db.doc('data/users/'+id+'/state');const snap=await CLOUD.get();let ch=false;if(snap.exists){const b=snap.data(),ca=JSON.parse(b.acc||'{}'),cd=JSON.parse(b.data||'{}');Object.keys(ca).forEach(u=>{if(!ACC[u]){ACC[u]=ca[u];ch=true}});Object.keys(cd).forEach(u=>{const l=rd(DK(u),null);if(!l||(cd[u].ts||0)>(l.ts||0)){wr(DK(u),cd[u]);if(u===USER)ch=true}});wr(AK,ACC);if(ch){if(USER){const v=S.view,t=S.tab;S=Object.assign(fresh(),rd(DK(USER),{}));S.view=v;S.tab=t}render()}}cloudPush()}catch(e){}}
 // ---------- Navigation & rendering ----------
 const NAV=[['home','🏠','Home'],['plans','📚','Plans'],['schedule','📅','Schedule'],['progress','📊','Progress'],['break','🧘','Break'],['chill','🤖','ChillBot'],['settings','⚙️','Settings']];
 function go(v,tab){S.view=v;if(tab)S.tab=tab;save();render();scrollTo(0,0)}
-function render(){document.documentElement.dataset.theme=S.theme||'';
+function render(){document.documentElement.dataset.theme=S.theme||'';document.querySelector('.app').style.display=USER?'':'block';if(!USER){$('#nav').style.display='none';$('#main').innerHTML=authView();return}$('#nav').style.display='';
 $('#nav').innerHTML='<div class="logo">STUDYMATE AI</div>'+NAV.map(n=>'<button class="'+((S.view===n[0]||(n[0]==='plans'&&S.view==='plan'))?'on':'')+'" onclick="'+(n[0]==='schedule'?'openSched()':'go(\''+n[0]+'\')')+'"><span>'+n[1]+'</span>'+n[2]+'</button>').join('');
 const v={home:S.student?dash:landing,plans,plan:planView,progress,break:brk,chill,settings}[S.view]||landing;$('#main').innerHTML=v();if(S.view==='break')initBreak();if(S.view==='chill')initChill();tick()}
 function openSched(){if(P())go('plan','schedule');else{toast('Open or create a plan first');go('plans')}}
@@ -217,9 +229,9 @@ if(/stress|anxious|worried|exam|scared/.test(q))return(ctx||'Yeah, that\'s a lot
 return'Thanks for sharing. Want a quick joke, a 60-second reset, or help picking your next small step? 💬'}
 // ---------- Settings ----------
 function settings(){return`<h1>Settings</h1><div class="grid"><div class="card"><h3>Student</h3><label>Name</label><input value="${esc((S.student||{}).name||'')}" onchange="S.student=S.student||{};S.student.name=this.value;save()"><label>Daily study hours</label><input type="number" min="1" max="8" value="${S.hours}" onchange="S.hours=+this.value||3;save()"><label>Preferred study start</label><input type="time" value="${S.pref}" onchange="S.pref=this.value;save()"><label>Theme</label><select onchange="S.theme=this.value;save();render()"><option value="">Auto</option><option ${S.theme==='light'?'selected':''}>light</option><option ${S.theme==='dark'?'selected':''}>dark</option></select></div>
-<div class="card"><h3>Data (stored only in this browser)</h3><div class="row"><button class="btn g" onclick="dl2('studymate-all.json',S)">Export All</button><button class="btn g" onclick="impAll()">Import All</button><button class="btn g" onclick="demo()">Load Demo Student</button><button class="btn r" onclick="confirmBox('Erase all data?',()=>{S=fresh();save();go('home')})">Reset All Data</button></div></div></div>`}
+<div class="card"><h3>Account</h3><p>Signed in as <b>${esc(USER)}</b></p><p class="mut">${CLOUD?'☁️ Also synced privately to your Claude account':'💾 Saved automatically on this device'}</p><button class="btn g" onclick="logout()">Log out</button></div><div class="card"><h3>Data backup</h3><div class="row"><button class="btn g" onclick="dl2('studymate-all.json',S)">Export All</button><button class="btn g" onclick="impAll()">Import All</button><button class="btn g" onclick="demo()">Load Demo Student</button><button class="btn r" onclick="confirmBox('Erase all data?',()=>{S=fresh();save();go('home')})">Reset All Data</button></div></div></div>`}
 function impAll(){const i=document.createElement('input');i.type='file';i.accept='.json';i.onchange=()=>i.files[0].text().then(t=>{try{const o=JSON.parse(t);if(o.plans)S=Object.assign(fresh(),o);else if(o.subjects){o.id=uid();S.plans.push(o);S.active=o.id}else throw 0;save();toast('Imported!');go('plans')}catch(e){toast('Invalid file')}});i.click()}
-render();
+render();cloudInit();
 </script>
 </body>
 </html>
